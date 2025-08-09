@@ -80,7 +80,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     fd.append("query", text);
     fd.append("company", JSON.stringify(st.selectedCompany));
     fd.append("includeGraphs", includeGraphs ? "true" : "false");
-    fd.append("chatHistory", JSON.stringify(s.messages));
+    fd.append("chatHistory", JSON.stringify(get().messages));
+
     try {
       const res = await fetch("/api/generate-report", { method: "POST", body: fd });
       const data = await res.json();
