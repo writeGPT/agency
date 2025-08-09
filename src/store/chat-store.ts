@@ -1,4 +1,4 @@
-﻿import create from "zustand";
+﻿import {create} from "zustand";
 
 export type UploadedFile = { id: string; name: string; size: number; status: "uploading"|"ready"|"error"; progress?: number; error?: string };
 export type Message = { id: string; type: "user"|"assistant"|"error"|"system"; content: string; timestamp: number; files?: UploadedFile[]; reportId?: string; charts?: any[] };
