@@ -10,6 +10,7 @@
         "prisma": "prisma generate"
     },
     "dependencies": {
+        "@anthropic-ai/sdk": "^0.60.0",
         "@prisma/client": "^5.17.0",
         "bcryptjs": "^2.4.3",
         "iron-session": "^8.0.4",
