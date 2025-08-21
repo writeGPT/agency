@@ -137,7 +137,9 @@ Do NOT use markdown. Generate proper HTML directly.`;
           status: 'PUBLISHED',
         },
       });
-      
+      const u = response.usage;
+      const totalTokens =
+      (u?.input_tokens ?? 0) + (u?.output_tokens ?? 0);
       // Return the actual AI-generated content
       return NextResponse.json({
         content: finalContent,
@@ -147,7 +149,7 @@ Do NOT use markdown. Generate proper HTML directly.`;
           model: response.model,
           tokensUsed: response.usage?.output_tokens || 0,
           inputTokens: response.usage?.input_tokens || 0,
-          totalTokens: response.usage?.total_tokens || 0,
+          totalTokens: totalTokens,
         }
       });
       
