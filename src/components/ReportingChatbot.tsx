@@ -3,7 +3,7 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { 
   Upload, Send, RotateCcw, Building2, FileText, X, ChevronDown, 
-  Loader2, BarChart3, AlertCircle, Save, Check, Edit2, Eye 
+  Loader2, BarChart3, AlertCircle, Save, Check, Edit2, Eye, Copy // <-- add Copy here
 } from 'lucide-react';
 import { useChatStore } from '../store/chat-store';
 import type { Report } from '../types';
@@ -83,6 +83,7 @@ const FileUploadZone: React.FC = () => {
   const { uploadedFiles, uploadFile, removeFile } = useChatStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
+
   const handleFiles = useCallback((files: FileList) => {
     Array.from(files).forEach(file => {
       const validTypes = ['application/pdf', 'text/csv', 'text/plain',
@@ -92,15 +93,28 @@ const FileUploadZone: React.FC = () => {
       if (file.size > 10 * 1024 * 1024) { console.error('File too large:', file.name); return; }
       uploadFile(file);
     });
+    // Reset the input value so the same file can be selected again
+    if (fileInputRef.current) fileInputRef.current.value = '';
   }, [uploadFile]);
+
   const handleDrop = useCallback((e: React.DragEvent) => { e.preventDefault(); setIsDragging(false); handleFiles(e.dataTransfer.files); }, [handleFiles]);
   const handleDragOver = useCallback((e: React.DragEvent) => { e.preventDefault(); setIsDragging(true); }, []);
   const handleDragLeave = useCallback(() => setIsDragging(false), []);
+
   return (
     <div className={`border-2 border-dashed rounded-lg p-4 transition-colors ${isDragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300'}`}
       onDrop={handleDrop} onDragOver={handleDragOver} onDragLeave={handleDragLeave}>
-      <input ref={fileInputRef} type="file" multiple accept=".pdf,.csv,.txt,.xlsx,.docx"
-        onChange={(e) => e.target.files && handleFiles(e.target.files)} className="hidden" />
+      {/* Always render the input, just hide it visually */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept=".pdf,.csv,.txt,.xlsx,.docx"
+        onChange={(e) => {
+          if (e.target.files) handleFiles(e.target.files);
+        }}
+        className="hidden"
+      />
       {uploadedFiles.length > 0 ? (
         <div className="space-y-2">
           {uploadedFiles.map(file => (
@@ -118,6 +132,14 @@ const FileUploadZone: React.FC = () => {
               </button>
             </div>
           ))}
+          {/* Add this button to allow adding more files */}
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="mt-2 px-3 py-2 bg-blue-50 text-blue-700 rounded hover:bg-blue-100 text-sm"
+          >
+            + Add more files
+          </button>
         </div>
       ) : (
         <button onClick={() => fileInputRef.current?.click()} className="w-full py-4 text-center text-gray-500 hover:text-gray-700">
@@ -164,6 +186,7 @@ export default function ReportingChatbot() {
   const [includeGraphs, setIncludeGraphs] = useState(false);
   const [showCompanyDropdown, setShowCompanyDropdown] = useState(false);
   const [isEditingReport, setIsEditingReport] = useState(false);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { checkAuth(); }, [checkAuth]);
@@ -227,9 +250,15 @@ export default function ReportingChatbot() {
           </div>
         </div>
       )}
-
       <div className="flex flex-1 overflow-hidden">
-        <div className={`${currentReport ? 'w-1/2' : 'flex-1'} flex flex-col bg-white`}>
+        <div className={`${currentReport ? 'w-1/2' : 'flex-1'} flex flex-col bg-white relative`}>
+          {/* Loader overlay over chat area */}
+          {isLoading && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-white bg-opacity-70">
+              <Loader2 className="w-10 h-10 animate-spin text-blue-600 mb-4" />
+              <div className="text-lg font-semibold text-blue-700">Generating report...</div>
+            </div>
+          )}
           <div className="flex-1 overflow-y-auto p-6 space-y-4">
             {messages.length === 0 && (
               <div className="text-center py-12 text-gray-500">
@@ -240,7 +269,7 @@ export default function ReportingChatbot() {
             )}
             {messages.map(message => (
               <div key={message.id} className={`flex ${message.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-2xl px-4 py-3 rounded-lg ${
+                <div className={`max-w-2xl px-4 py-3 rounded-lg relative ${
                     message.type === 'user' ? 'bg-blue-600 text-white' :
                     message.type === 'assistant' ? 'bg-gray-100 text-gray-900' :
                     message.type === 'error' ? 'bg-red-50 text-red-800 border border-red-200' :
@@ -256,6 +285,24 @@ export default function ReportingChatbot() {
                   )}
                   {message.type === 'assistant' ? (
                     <div>
+                      {/* Copy button */}
+                      <button
+                        className="absolute top-2 right-2 p-1 rounded hover:bg-blue-100 transition"
+                        title="Copy reply"
+                        onClick={async () => {
+                          await navigator.clipboard.writeText(message.content);
+                          setCopiedMsgId(message.id);
+                          setTimeout(() => setCopiedMsgId(null), 1200);
+                        }}
+                      >
+                        <Copy className="w-4 h-4 text-blue-500" />
+                      </button>
+                      {/* Copied feedback */}
+                      {copiedMsgId === message.id && (
+                        <span className="absolute top-2 right-10 text-xs text-green-600 bg-white px-2 py-0.5 rounded shadow">
+                          Copied!
+                        </span>
+                      )}
                       <div className="line-clamp-3" dangerouslySetInnerHTML={{ __html: message.content.substring(0, 200) + '...' }} />
                       {message.reportId && (
                         <button onClick={() => {
@@ -264,7 +311,7 @@ export default function ReportingChatbot() {
                               query: '', timestamp: message.timestamp,
                             }; setReport(report);
                           }} className="text-xs mt-2 underline opacity-70 hover:opacity-100">
-                          View full report â†’
+                          View full report →
                         </button>
                       )}
                     </div>
