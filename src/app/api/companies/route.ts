@@ -14,15 +14,37 @@ export async function GET() {
     });
 
     if (companies.length === 0) {
-      const demoCompany = await prisma.company.create({
+      // Create three demo companies if none exist for the user
+      await prisma.company.create({
         data: {
-          name: 'Demo Company',
-          industry: 'Technology',
-          context: 'B2B SaaS',
+          name: 'Pluxee',
+          industry: 'Payments',
+          context: 'Food Stamps',
           users: { create: { userId: (session as any).user.id, role: 'OWNER' } },
         },
       });
-      (companies as any).push({ id: (demoCompany as any).id, name: demoCompany.name, industry: demoCompany.industry, context: demoCompany.context });
+      await prisma.company.create({
+        data: {
+          name: 'Luca',
+          industry: 'Food',
+          context: 'Pastry',
+          users: { create: { userId: (session as any).user.id, role: 'OWNER' } },
+        },
+      });
+      await prisma.company.create({
+        data: {
+          name: 'Synology',
+          industry: 'Hardware',
+          context: 'Network Storage',
+          users: { create: { userId: (session as any).user.id, role: 'OWNER' } },
+        },
+      });
+      // Fetch the companies again after creation
+      const newCompanies = await prisma.company.findMany({
+        where: { users: { some: { userId: (session as any).user.id } } },
+        select: { id: true, name: true, industry: true, context: true },
+      });
+      return NextResponse.json(newCompanies);
     }
     return NextResponse.json(companies);
   } catch (error) {
