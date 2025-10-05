@@ -141,6 +141,11 @@ export const useChatStore = create<ChatStore>()(
           // CRITICAL FIX: Send parsed content, not raw files
           // ==========================================
           
+          console.log(`🔍 Debug: Total uploaded files: ${state.uploadedFiles.length}`);
+          state.uploadedFiles.forEach((file, index) => {
+            console.log(`  File ${index + 1}: ${file.name} - Status: ${file.status} - Has content: ${!!file.content} - Content length: ${file.content?.length || 0}`);
+          });
+          
           // Option 1: Send pre-parsed content (more efficient)
           if (state.uploadedFiles.some(f => f.content)) {
             const filesContent = state.uploadedFiles
@@ -154,6 +159,9 @@ export const useChatStore = create<ChatStore>()(
             
             formData.append('filesContent', JSON.stringify(filesContent));
             console.log(`📤 Sending ${filesContent.length} pre-parsed files`);
+            console.log(`📋 Files content preview:`, filesContent.map(f => ({ name: f.name, contentLength: f.content.length })));
+          } else {
+            console.log('⚠️ No files with content found for pre-parsing option');
           }
           
           // Option 2: Send raw files for backend processing
@@ -164,6 +172,10 @@ export const useChatStore = create<ChatStore>()(
               formData.append('files', file.rawFile);
               console.log(`📤 Sending raw file: ${file.name}`);
             }
+          }
+          
+          if (unparsedFiles.length === 0 && !state.uploadedFiles.some(f => f.content)) {
+            console.log('🚨 WARNING: No files being sent - neither pre-parsed nor raw!');
           }
           
           // Make the API call

@@ -48,6 +48,15 @@ export async function POST(request: NextRequest) {
     console.log(`📄 Query: ${query.substring(0, 100)}...`);
     console.log(`📁 Files content: ${filesContent.length} pre-parsed files`);
     
+    // DEBUG: Log the actual filesContent to see what we're getting
+    if (filesContent.length > 0) {
+      console.log('📋 Pre-parsed files details:');
+      filesContent.forEach((file, index) => {
+        console.log(`  ${index + 1}. ${file.name} (${file.content?.length || 0} chars)`);
+        console.log(`     Content preview: ${file.content?.substring(0, 200)}...`);
+      });
+    }
+    
     // ==========================================
     // STEP 2: Process uploaded files (if any raw files sent)
     // ==========================================
@@ -71,14 +80,23 @@ export async function POST(request: NextRequest) {
     if (filesContent.length > 0) {
       documentsContext = formatPreParsedContent(filesContent);
       console.log(`✅ Using ${filesContent.length} pre-parsed files`);
+      console.log(`📄 Document context sample: ${documentsContext.substring(0, 300)}...`);
     }
     // OPTION 2: Process raw files on backend (fallback)
     else if (uploadedFiles.length > 0) {
       documentsContext = await processMultipleFiles(uploadedFiles);
       console.log(`✅ Processed ${uploadedFiles.length} raw files on backend`);
+      console.log(`📄 Document context sample: ${documentsContext.substring(0, 300)}...`);
+    } else {
+      console.log('⚠️ No files found - neither pre-parsed nor raw files');
     }
     
-    console.log(`📄 Document context: ${documentsContext.length} characters`);
+    console.log(`📄 Final document context: ${documentsContext.length} characters`);
+    
+    // CRITICAL: Log if no document context was found
+    if (documentsContext.length === 0) {
+      console.log('🚨 WARNING: No document context found! AI will respond without file data.');
+    }
     
     // ==========================================
     // STEP 4: Generate report with Claude
@@ -91,6 +109,16 @@ export async function POST(request: NextRequest) {
     const userMessage = buildUserMessage(query, documentsContext, includeGraphs);
     
     console.log('🤖 Calling Anthropic Claude...');
+    console.log(`📝 System prompt length: ${systemPrompt.length} characters`);
+    console.log(`📝 User message length: ${userMessage.length} characters`);
+    
+    // DEBUG: Log the user message to verify document context is included
+    if (documentsContext.length > 0) {
+      console.log('✅ Document context IS included in user message');
+      console.log(`📄 User message preview: ${userMessage.substring(0, 500)}...`);
+    } else {
+      console.log('❌ Document context is EMPTY - AI will not have file data!');
+    }
     
     try {
       const response = await anthropic.messages.create({
@@ -219,9 +247,28 @@ async function processMultipleFiles(files: File[]): Promise<string> {
 function formatPreParsedContent(filesContent: any[]): string {
   const sections: string[] = [];
   
-  filesContent.forEach(file => {
-    sections.push(`\n=== File: ${file.name} ===\n`);
-    sections.push(file.content);
+  sections.push('📄 UPLOADED FILES DATA:');
+  sections.push('');
+  
+  filesContent.forEach((file, index) => {
+    sections.push(`📋 FILE ${index + 1}: ${file.name}`);
+    sections.push('─'.repeat(60));
+    
+    // Add file metadata if available
+    if (file.metadata) {
+      sections.push('📊 File Information:');
+      if (file.metadata.size) sections.push(`• Size: ${file.metadata.size} bytes`);
+      if (file.metadata.type) sections.push(`• Type: ${file.metadata.type}`);
+      if (file.metadata.rowCount) sections.push(`• Rows: ${file.metadata.rowCount}`);
+      if (file.metadata.columnCount) sections.push(`• Columns: ${file.metadata.columnCount}`);
+      sections.push('');
+    }
+    
+    // Add the actual content
+    sections.push('📄 Content:');
+    sections.push(file.content || '[No content available]');
+    sections.push('');
+    sections.push('='.repeat(80));
     sections.push('');
   });
   
@@ -234,11 +281,26 @@ function formatPreParsedContent(filesContent: any[]): string {
 function buildSystemPrompt(company: any, includeGraphs: boolean): string {
   return `You are an expert analyst creating comprehensive reports for ${company.name}, a ${company.industry || 'company'} focused on ${company.context || 'business operations'}.
 
+CRITICAL INSTRUCTIONS:
+1. ALWAYS prioritize and reference the uploaded document data when provided
+2. Base your analysis on SPECIFIC data points, numbers, and metrics from the files
+3. If data is provided, DO NOT make up or assume information - use only what's in the documents
+4. Identify patterns, trends, and insights directly from the uploaded data
+5. Quote specific figures, percentages, and metrics from the documents
+
 Your role is to:
 1. Analyze all provided documents and data holistically
-2. Identify patterns, trends, and insights across multiple sources
-3. Reconcile any conflicting information between documents
-4. Generate actionable insights and recommendations
+2. Extract specific insights from the actual data provided
+3. Identify patterns, trends, and correlations in the uploaded files
+4. Reconcile any conflicting information between documents
+5. Generate actionable insights based on the real data
+
+When document data is provided:
+- Reference specific numbers, percentages, and metrics from the files
+- Create analysis based on the actual data patterns
+- Highlight key findings that emerge from the uploaded content
+- Compare different data sources if multiple files are provided
+- Use the uploaded data as the foundation for all recommendations
 
 When multiple documents are provided:
 - Treat them as a connected set of information
@@ -251,9 +313,10 @@ Output format:
 - Structure your report with clear sections
 - Include an executive summary at the beginning
 - Provide specific, actionable recommendations
+- Always cite specific data points from the uploaded files
 
 ${includeGraphs ? `
-When you identify data suitable for visualization, include chart specifications in this format:
+When you identify data suitable for visualization from the uploaded files, include chart specifications in this format:
 <<<CHART_START>>>
 {
   "type": "bar|line|pie|doughnut",
@@ -270,7 +333,7 @@ When you identify data suitable for visualization, include chart specifications 
 <<<CHART_END>>>
 ` : ''}
 
-Remember: You have access to the full context of all uploaded files. Use this comprehensive view to provide insights that wouldn't be possible from analyzing files in isolation.`;
+Remember: You have access to specific uploaded file content. Use this data as the PRIMARY source for your analysis and insights. Reference specific numbers and details from the files.`;
 }
 
 /**
@@ -279,20 +342,31 @@ Remember: You have access to the full context of all uploaded files. Use this co
 function buildUserMessage(query: string, documentsContext: string, includeGraphs: boolean): string {
   const parts: string[] = [];
   
-  parts.push('USER REQUEST:');
-  parts.push(query);
-  parts.push('');
-  
-  if (documentsContext) {
-    parts.push('DOCUMENT CONTEXT:');
+  // Make document context the primary focus
+  if (documentsContext && documentsContext.trim().length > 0) {
+    parts.push('='.repeat(80));
+    parts.push('📊 UPLOADED DOCUMENT DATA - ANALYZE THIS CONTENT:');
+    parts.push('='.repeat(80));
+    parts.push('');
     parts.push(documentsContext);
     parts.push('');
-  }
-  
-  parts.push('Please analyze the provided information and generate a comprehensive report addressing the user\'s request.');
-  
-  if (includeGraphs && documentsContext.includes('Table')) {
-    parts.push('Include relevant data visualizations where appropriate to illustrate key findings.');
+    parts.push('='.repeat(80));
+    parts.push('📋 USER REQUEST BASED ON THE ABOVE DATA:');
+    parts.push('='.repeat(80));
+    parts.push(query);
+    parts.push('');
+    parts.push('⚠️ IMPORTANT: Base your analysis PRIMARILY on the uploaded document data above.');
+    parts.push('Create insights, trends, and recommendations using the specific data provided.');
+    parts.push('Reference specific numbers, metrics, and details from the uploaded files.');
+    
+    if (includeGraphs && (documentsContext.includes('Table') || documentsContext.includes('CSV') || documentsContext.includes('rows'))) {
+      parts.push('📊 Create visualizations from the data tables in the uploaded files.');
+    }
+  } else {
+    parts.push('USER REQUEST:');
+    parts.push(query);
+    parts.push('');
+    parts.push('⚠️ Note: No specific document data was provided. Please create a general analysis based on the company context.');
   }
   
   return parts.join('\n');
