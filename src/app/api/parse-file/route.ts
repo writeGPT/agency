@@ -1,6 +1,11 @@
 ﻿import { NextRequest, NextResponse } from 'next/server';
 import * as XLSX from 'xlsx';
 import * as mammoth from 'mammoth';
+import { readPdfWithClaudeFast } from '@/lib/claude-pdf-agent';
+
+// Configure route for PDF processing with Claude
+export const runtime = 'nodejs';
+export const maxDuration = 120; // 2 minutes for Claude PDF processing (fast mode)
 
 interface ParseResult {
   success: boolean;
@@ -145,62 +150,6 @@ async function parseExcel(buffer: ArrayBuffer, fileName: string): Promise<Partia
   }
 }
 
-// New: PDF parser that avoids using the worker URL import (disables worker)
-export async function parsePDFBuffer(buffer: ArrayBuffer | Buffer, fileName: string): Promise<ParseResult> {
-  try {
-    // dynamic import to avoid bundling worker URL at build time
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf');
-
-    // Ensure we pass a Uint8Array to pdfjs
-    const data = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer as Buffer);
-
-    // disableWorker: true prevents pdfjs from trying to load an external worker file
-    const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
-    const doc = await loadingTask.promise;
-    const pageCount = doc.numPages || 0;
-
-    let content = '';
-    for (let i = 1; i <= pageCount; i++) {
-      const page = await doc.getPage(i);
-      const textContent = await page.getTextContent();
-      const strings = textContent.items.map((item: any) => {
-        // text items typically have `str`
-        return item && typeof item.str === 'string' ? item.str : '';
-      });
-      content += strings.join(' ') + '\n\n';
-    }
-
-    return {
-      success: true,
-      content,
-      structured: undefined,
-      tables: [],
-      metadata: {
-        name: fileName,
-        type: 'application/pdf',
-        size: data.byteLength,
-        pageCount
-      },
-      summary: content.slice(0, 1000)
-    };
-  } catch (error: any) {
-    console.error('PDF parse error:', error);
-    return {
-      success: false,
-      content: '',
-      structured: undefined,
-      tables: [],
-      metadata: {
-        name: fileName,
-        type: 'application/pdf',
-        size: 0
-      },
-      summary: '',
-      error: String(error)
-    };
-  }
-}
-
 // Helper: Parse DOCX files
 async function parseDOCX(buffer: ArrayBuffer, fileName: string): Promise<Partial<ParseResult>> {
   try {
@@ -266,9 +215,33 @@ export async function POST(request: NextRequest) {
         result = { ...result, ...parsed };
         
       } else if (fileName.endsWith('.pdf') || fileType === 'application/pdf') {
-        // PDF files
-        const parsed = await parsePDFBuffer(buffer, file.name);
-        result = { ...result, ...parsed };
+        // PDF files - using Claude fast document API (no agent skills)
+        const pdfResult = await readPdfWithClaudeFast(file);
+
+        if (pdfResult.error) {
+          throw new Error(pdfResult.error);
+        }
+
+        result.content = pdfResult.content;
+        result.metadata = {
+          ...result.metadata,
+          pageCount: pdfResult.metadata?.pageCount
+        };
+        result.summary = pdfResult.metadata?.summary ||
+                        `PDF file with ${pdfResult.content.length} characters extracted`;
+
+        // Check if tables were mentioned in the content
+        if (pdfResult.metadata?.hasTables) {
+          result.tables = [{
+            name: file.name,
+            headers: [],
+            rows: [],
+            insights: {
+              hasTables: true,
+              extractedByAI: true
+            }
+          }];
+        }
         
       } else if (fileName.endsWith('.docx') || 
                  fileType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
