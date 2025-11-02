@@ -1,68 +1,72 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { getSession } from '@/lib/session';
-import { prisma } from '@/lib/prisma';
-import Anthropic from '@anthropic-ai/sdk';
+import { NextRequest, NextResponse } from "next/server";
+import { getSession } from "@/lib/session";
+import { prisma } from "@/lib/prisma";
+import Anthropic from "@anthropic-ai/sdk";
 
 // ==========================================
 // CRITICAL: Configure Next.js to handle file uploads
 // ==========================================
-export const runtime = 'nodejs'; // Use Node.js runtime, not Edge
-export const maxDuration = 60; // Allow 60 seconds for processing
+export const runtime = "nodejs"; // Use Node.js runtime, not Edge
+export const maxDuration = 300; // Allow 5 minutes for processing with streaming
 
 export async function POST(request: NextRequest) {
-  console.log('📥 Report generation request received');
-  
+  console.log("📥 Report generation request received");
+
   try {
     // Check authentication
     const session = await getSession();
     if (!session.user) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
     // ==========================================
     // STEP 1: Parse the multipart form data
     // ==========================================
     const formData = await request.formData();
-    
+
     // Extract fields
-    const query = formData.get('query') as string;
-    const companyStr = formData.get('company') as string;
-    const includeGraphs = formData.get('includeGraphs') === 'true';
-    const chatHistoryStr = formData.get('chatHistory') as string;
-    
+    const query = formData.get("query") as string;
+    const companyStr = formData.get("company") as string;
+    const includeGraphs = formData.get("includeGraphs") === "true";
+    const chatHistoryStr = formData.get("chatHistory") as string;
+
     // CRITICAL FIX: Get the parsed content that frontend already processed
-    const filesContentStr = formData.get('filesContent') as string;
-    
+    const filesContentStr = formData.get("filesContent") as string;
+
     if (!query || !companyStr) {
       return NextResponse.json(
-        { error: 'Missing query or company' },
+        { error: "Missing query or company" },
         { status: 400 }
       );
     }
-    
+
     const company = JSON.parse(companyStr);
     const chatHistory = chatHistoryStr ? JSON.parse(chatHistoryStr) : [];
     const filesContent = filesContentStr ? JSON.parse(filesContentStr) : [];
-    
+
     console.log(`🏢 Company: ${company.name}`);
     console.log(`📄 Query: ${query.substring(0, 100)}...`);
     console.log(`📁 Files content: ${filesContent.length} pre-parsed files`);
-    
+
     // DEBUG: Log the actual filesContent to see what we're getting
     if (filesContent.length > 0) {
-      console.log('📋 Pre-parsed files details:');
+      console.log("📋 Pre-parsed files details:");
       filesContent.forEach((file, index) => {
-        console.log(`  ${index + 1}. ${file.name} (${file.content?.length || 0} chars)`);
-        console.log(`     Content preview: ${file.content?.substring(0, 200)}...`);
+        console.log(
+          `  ${index + 1}. ${file.name} (${file.content?.length || 0} chars)`
+        );
+        console.log(
+          `     Content preview: ${file.content?.substring(0, 200)}...`
+        );
       });
     }
-    
+
     // ==========================================
     // STEP 2: Process uploaded files (if any raw files sent)
     // ==========================================
-    const files = formData.getAll('files') as File[];
+    const files = formData.getAll("files") as File[];
     const uploadedFiles: File[] = [];
-    
+
     // Collect any raw files that weren't pre-parsed
     for (const file of files) {
       if (file && file instanceof File) {
@@ -70,88 +74,126 @@ export async function POST(request: NextRequest) {
         console.log(`📎 Raw file: ${file.name} (${file.size} bytes)`);
       }
     }
-    
+
     // ==========================================
     // STEP 3: Build document context
     // ==========================================
-    let documentsContext = '';
-    
+    let documentsContext = "";
+
     // OPTION 1: Use pre-parsed content from frontend (preferred)
     if (filesContent.length > 0) {
       documentsContext = formatPreParsedContent(filesContent);
       console.log(`✅ Using ${filesContent.length} pre-parsed files`);
-      console.log(`📄 Document context sample: ${documentsContext.substring(0, 300)}...`);
+      console.log(
+        `📄 Document context sample: ${documentsContext.substring(0, 300)}...`
+      );
     }
     // OPTION 2: Process raw files on backend (fallback)
     else if (uploadedFiles.length > 0) {
       documentsContext = await processMultipleFiles(uploadedFiles);
       console.log(`✅ Processed ${uploadedFiles.length} raw files on backend`);
-      console.log(`📄 Document context sample: ${documentsContext.substring(0, 300)}...`);
+      console.log(
+        `📄 Document context sample: ${documentsContext.substring(0, 300)}...`
+      );
     } else {
-      console.log('⚠️ No files found - neither pre-parsed nor raw files');
+      console.log("⚠️ No files found - neither pre-parsed nor raw files");
     }
-    
-    console.log(`📄 Final document context: ${documentsContext.length} characters`);
-    
+
+    console.log(
+      `📄 Final document context: ${documentsContext.length} characters`
+    );
+
     // CRITICAL: Log if no document context was found
     if (documentsContext.length === 0) {
-      console.log('🚨 WARNING: No document context found! AI will respond without file data.');
+      console.log(
+        "🚨 WARNING: No document context found! AI will respond without file data."
+      );
     }
-    
+
     // ==========================================
     // STEP 4: Generate report with Claude
     // ==========================================
     const anthropic = new Anthropic({
       apiKey: process.env.ANTHROPIC_API_KEY!,
     });
-    
+
     const systemPrompt = buildSystemPrompt(company, includeGraphs);
-    const userMessage = buildUserMessage(query, documentsContext, includeGraphs);
-    
-    console.log('🤖 Calling Anthropic Claude...');
+    const userMessage = buildUserMessage(
+      query,
+      documentsContext,
+      includeGraphs
+    );
+
+    console.log("🤖 Calling Anthropic Claude...");
     console.log(`📝 System prompt length: ${systemPrompt.length} characters`);
     console.log(`📝 User message length: ${userMessage.length} characters`);
-    
+
     // DEBUG: Log the user message to verify document context is included
     if (documentsContext.length > 0) {
-      console.log('✅ Document context IS included in user message');
-      console.log(`📄 User message preview: ${userMessage.substring(0, 500)}...`);
+      console.log("✅ Document context IS included in user message");
+      console.log(
+        `📄 User message preview: ${userMessage.substring(0, 500)}...`
+      );
     } else {
-      console.log('❌ Document context is EMPTY - AI will not have file data!');
+      console.log("❌ Document context is EMPTY - AI will not have file data!");
     }
-    
+
     try {
-      const response = await anthropic.messages.create({
-        model: 'claude-3-5-sonnet-20241022',
-        max_tokens: 4000,
+      // Use streaming for long-running requests
+      const stream = await anthropic.messages.stream({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 64000,
         temperature: 0.7,
         system: systemPrompt,
         messages: [
           ...formatChatHistory(chatHistory),
-          { role: 'user', content: userMessage }
+          { role: "user", content: userMessage },
         ],
       });
-      
-      // Extract response
-      const aiContent = response.content[0].type === 'text' 
-        ? response.content[0].text 
-        : '';
-      
+
+      // Collect the full response from the stream
+      let aiContent = "";
+
+      for await (const chunk of stream) {
+        if (chunk.type === 'content_block_delta' &&
+            chunk.delta.type === 'text_delta') {
+          aiContent += chunk.delta.text;
+        }
+      }
+
+      // Wait for the stream to complete and get final message with usage data
+      const finalMessage = await stream.finalMessage();
+
       console.log(`✅ AI response received: ${aiContent.length} characters`);
-      
+
+      // Log token usage for report generation
+      if (finalMessage.usage) {
+        console.log(`\n📊 Token Usage for Report Generation:`);
+        console.log(`   📥 Input tokens: ${finalMessage.usage.input_tokens.toLocaleString()}`);
+        console.log(`   📤 Output tokens: ${finalMessage.usage.output_tokens.toLocaleString()}`);
+        console.log(`   💰 Total tokens: ${(finalMessage.usage.input_tokens + finalMessage.usage.output_tokens).toLocaleString()}`);
+        console.log(`   🏷️  Model: ${finalMessage.model}`);
+
+        // Calculate approximate cost (Claude Sonnet 4.5 pricing)
+        const inputCost = (finalMessage.usage.input_tokens / 1_000_000) * 3.00;
+        const outputCost = (finalMessage.usage.output_tokens / 1_000_000) * 15.00;
+        const totalCost = inputCost + outputCost;
+        console.log(`   💵 Estimated cost: $${totalCost.toFixed(4)}`);
+      }
+
       // ==========================================
       // STEP 5: Process charts if requested
       // ==========================================
       let finalContent = aiContent;
       let charts: any[] = [];
-      
+
       if (includeGraphs) {
         const result = extractChartsFromContent(aiContent);
         finalContent = result.content;
         charts = result.charts;
         console.log(`📊 Extracted ${charts.length} charts`);
       }
-      
+
       // ==========================================
       // STEP 6: Save to database
       // ==========================================
@@ -162,12 +204,12 @@ export async function POST(request: NextRequest) {
           companyId: company.id,
           userId: session.user.id,
           charts: charts.length > 0 ? JSON.stringify(charts) : null,
-          status: 'PUBLISHED',
+          status: "PUBLISHED",
         },
       });
-      
+
       console.log(`💾 Report saved with ID: ${report.id}`);
-      
+
       // Return success response
       return NextResponse.json({
         success: true,
@@ -175,46 +217,57 @@ export async function POST(request: NextRequest) {
         charts: charts,
         reportId: report.id,
         metadata: {
-          model: response.model,
-          tokensUsed: response.usage?.output_tokens || 0,
-          inputTokens: response.usage?.input_tokens || 0,
+          model: finalMessage.model,
+          tokensUsed: finalMessage.usage?.output_tokens || 0,
+          inputTokens: finalMessage.usage?.input_tokens || 0,
           processingTime: Date.now(),
           filesProcessed: uploadedFiles.length,
-        }
+        },
       });
-      
     } catch (anthropicError: any) {
-      console.error('❌ Anthropic API Error:', anthropicError);
-      
+      console.error("❌ Anthropic API Error:", anthropicError);
+
       if (anthropicError.status === 401) {
-        return NextResponse.json({
-          error: 'Invalid API key. Please check your ANTHROPIC_API_KEY in .env.local',
-          code: 'INVALID_API_KEY'
-        }, { status: 500 });
+        return NextResponse.json(
+          {
+            error:
+              "Invalid API key. Please check your ANTHROPIC_API_KEY in .env.local",
+            code: "INVALID_API_KEY",
+          },
+          { status: 500 }
+        );
       } else if (anthropicError.status === 429) {
-        return NextResponse.json({
-          error: 'Rate limit exceeded. Please try again in a few moments.',
-          code: 'RATE_LIMIT'
-        }, { status: 429 });
+        return NextResponse.json(
+          {
+            error: "Rate limit exceeded. Please try again in a few moments.",
+            code: "RATE_LIMIT",
+          },
+          { status: 429 }
+        );
       } else if (anthropicError.status === 400) {
-        return NextResponse.json({
-          error: 'Request too large or invalid. Try with fewer files.',
-          code: 'INVALID_REQUEST',
-          details: anthropicError.message
-        }, { status: 400 });
+        return NextResponse.json(
+          {
+            error: "Request too large or invalid. Try with fewer files.",
+            code: "INVALID_REQUEST",
+            details: anthropicError.message,
+          },
+          { status: 400 }
+        );
       }
-      
+
       throw anthropicError;
     }
-    
   } catch (error) {
-    console.error('❌ Report generation error:', error);
-    
-    return NextResponse.json({
-      error: 'Failed to generate report',
-      details: error instanceof Error ? error.message : 'Unknown error',
-      code: 'GENERATION_ERROR'
-    }, { status: 500 });
+    console.error("❌ Report generation error:", error);
+
+    return NextResponse.json(
+      {
+        error: "Failed to generate report",
+        details: error instanceof Error ? error.message : "Unknown error",
+        code: "GENERATION_ERROR",
+      },
+      { status: 500 }
+    );
   }
 }
 
@@ -227,7 +280,7 @@ export async function POST(request: NextRequest) {
  */
 async function processMultipleFiles(files: File[]): Promise<string> {
   const results: string[] = [];
-  
+
   for (const file of files) {
     try {
       const content = await file.text();
@@ -237,8 +290,8 @@ async function processMultipleFiles(files: File[]): Promise<string> {
       results.push(`\n=== ${file.name} ===\n[Error: Could not read file]`);
     }
   }
-  
-  return results.join('\n');
+
+  return results.join("\n");
 }
 
 /**
@@ -246,40 +299,47 @@ async function processMultipleFiles(files: File[]): Promise<string> {
  */
 function formatPreParsedContent(filesContent: any[]): string {
   const sections: string[] = [];
-  
-  sections.push('📄 UPLOADED FILES DATA:');
-  sections.push('');
-  
+
+  sections.push("📄 UPLOADED FILES DATA:");
+  sections.push("");
+
   filesContent.forEach((file, index) => {
     sections.push(`📋 FILE ${index + 1}: ${file.name}`);
-    sections.push('─'.repeat(60));
-    
+    sections.push("─".repeat(60));
+
     // Add file metadata if available
     if (file.metadata) {
-      sections.push('📊 File Information:');
-      if (file.metadata.size) sections.push(`• Size: ${file.metadata.size} bytes`);
+      sections.push("📊 File Information:");
+      if (file.metadata.size)
+        sections.push(`• Size: ${file.metadata.size} bytes`);
       if (file.metadata.type) sections.push(`• Type: ${file.metadata.type}`);
-      if (file.metadata.rowCount) sections.push(`• Rows: ${file.metadata.rowCount}`);
-      if (file.metadata.columnCount) sections.push(`• Columns: ${file.metadata.columnCount}`);
-      sections.push('');
+      if (file.metadata.rowCount)
+        sections.push(`• Rows: ${file.metadata.rowCount}`);
+      if (file.metadata.columnCount)
+        sections.push(`• Columns: ${file.metadata.columnCount}`);
+      sections.push("");
     }
-    
+
     // Add the actual content
-    sections.push('📄 Content:');
-    sections.push(file.content || '[No content available]');
-    sections.push('');
-    sections.push('='.repeat(80));
-    sections.push('');
+    sections.push("📄 Content:");
+    sections.push(file.content || "[No content available]");
+    sections.push("");
+    sections.push("=".repeat(80));
+    sections.push("");
   });
-  
-  return sections.join('\n');
+
+  return sections.join("\n");
 }
 
 /**
  * Build system prompt for Claude
  */
 function buildSystemPrompt(company: any, includeGraphs: boolean): string {
-  return `You are an expert analyst creating comprehensive reports for ${company.name}, a ${company.industry || 'company'} focused on ${company.context || 'business operations'}.
+  return `You are an expert analyst creating comprehensive reports for ${
+    company.name
+  }, a ${company.industry || "company"} focused on ${
+    company.context || "business operations"
+  }.
 
 CRITICAL INSTRUCTIONS:
 1. ALWAYS prioritize and reference the uploaded document data when provided
@@ -315,7 +375,9 @@ Output format:
 - Provide specific, actionable recommendations
 - Always cite specific data points from the uploaded files
 
-${includeGraphs ? `
+${
+  includeGraphs
+    ? `
 When you identify data suitable for visualization from the uploaded files, include chart specifications in this format:
 <<<CHART_START>>>
 {
@@ -331,7 +393,9 @@ When you identify data suitable for visualization from the uploaded files, inclu
   }
 }
 <<<CHART_END>>>
-` : ''}
+`
+    : ""
+}
 
 Remember: You have access to specific uploaded file content. Use this data as the PRIMARY source for your analysis and insights. Reference specific numbers and details from the files.`;
 }
@@ -339,82 +403,111 @@ Remember: You have access to specific uploaded file content. Use this data as th
 /**
  * Build user message with document context
  */
-function buildUserMessage(query: string, documentsContext: string, includeGraphs: boolean): string {
+function buildUserMessage(
+  query: string,
+  documentsContext: string,
+  includeGraphs: boolean
+): string {
   const parts: string[] = [];
-  
+
   // Make document context the primary focus
   if (documentsContext && documentsContext.trim().length > 0) {
-    parts.push('='.repeat(80));
-    parts.push('📊 UPLOADED DOCUMENT DATA - ANALYZE THIS CONTENT:');
-    parts.push('='.repeat(80));
-    parts.push('');
+    parts.push("=".repeat(80));
+    parts.push("📊 UPLOADED DOCUMENT DATA - ANALYZE THIS CONTENT:");
+    parts.push("=".repeat(80));
+    parts.push("");
     parts.push(documentsContext);
-    parts.push('');
-    parts.push('='.repeat(80));
-    parts.push('📋 USER REQUEST BASED ON THE ABOVE DATA:');
-    parts.push('='.repeat(80));
+    parts.push("");
+    parts.push("=".repeat(80));
+    parts.push("📋 USER REQUEST BASED ON THE ABOVE DATA:");
+    parts.push("=".repeat(80));
     parts.push(query);
-    parts.push('');
-    parts.push('⚠️ IMPORTANT: Base your analysis PRIMARILY on the uploaded document data above.');
-    parts.push('Create insights, trends, and recommendations using the specific data provided.');
-    parts.push('Reference specific numbers, metrics, and details from the uploaded files.');
-    
-    if (includeGraphs && (documentsContext.includes('Table') || documentsContext.includes('CSV') || documentsContext.includes('rows'))) {
-      parts.push('📊 Create visualizations from the data tables in the uploaded files.');
+    parts.push("");
+    parts.push(
+      "⚠️ IMPORTANT: Base your analysis PRIMARILY on the uploaded document data above."
+    );
+    parts.push(
+      "Create insights, trends, and recommendations using the specific data provided."
+    );
+    parts.push(
+      "Reference specific numbers, metrics, and details from the uploaded files."
+    );
+
+    if (
+      includeGraphs &&
+      (documentsContext.includes("Table") ||
+        documentsContext.includes("CSV") ||
+        documentsContext.includes("rows"))
+    ) {
+      parts.push(
+        "📊 Create visualizations from the data tables in the uploaded files."
+      );
     }
   } else {
-    parts.push('USER REQUEST:');
+    parts.push("USER REQUEST:");
     parts.push(query);
-    parts.push('');
-    parts.push('⚠️ Note: No specific document data was provided. Please create a general analysis based on the company context.');
+    parts.push("");
+    parts.push(
+      "⚠️ Note: No specific document data was provided. Please create a general analysis based on the company context."
+    );
   }
-  
-  return parts.join('\n');
+
+  return parts.join("\n");
 }
 
 /**
  * Format chat history for Claude
  */
-function formatChatHistory(history: any[]): Array<{ role: 'user' | 'assistant'; content: string }> {
+function formatChatHistory(
+  history: any[]
+): Array<{ role: "user" | "assistant"; content: string }> {
   return history
     .slice(-10) // Keep last 10 messages for context
-    .filter(msg => msg.type === 'user' || msg.type === 'assistant')
-    .map(msg => ({
-      role: msg.type as 'user' | 'assistant',
-      content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
+    .filter((msg) => msg.type === "user" || msg.type === "assistant")
+    .map((msg) => ({
+      role: msg.type as "user" | "assistant",
+      content:
+        typeof msg.content === "string"
+          ? msg.content
+          : JSON.stringify(msg.content),
     }));
 }
 
 /**
  * Extract chart specifications from AI response
  */
-function extractChartsFromContent(content: string): { content: string; charts: any[] } {
+function extractChartsFromContent(content: string): {
+  content: string;
+  charts: any[];
+} {
   const charts: any[] = [];
   let processedContent = content;
-  
+
   // Find all chart specifications
   const chartRegex = /<<<CHART_START>>>([\s\S]*?)<<<CHART_END>>>/g;
   let match;
   let chartIndex = 0;
-  
+
   while ((match = chartRegex.exec(content)) !== null) {
     try {
       const chartSpec = JSON.parse(match[1]);
-      
+
       // Validate and enhance chart specification
       const chart = {
         id: `chart-${Date.now()}-${chartIndex++}`,
-        type: chartSpec.type || 'bar',
+        type: chartSpec.type || "bar",
         title: chartSpec.title || `Chart ${chartIndex}`,
         data: {
           labels: chartSpec.data?.labels || [],
           datasets: (chartSpec.data?.datasets || []).map((ds: any) => ({
-            label: ds.label || 'Data',
+            label: ds.label || "Data",
             data: ds.data || [],
-            backgroundColor: ds.backgroundColor || generateColors(ds.data?.length || 0),
-            borderColor: ds.borderColor || generateColors(ds.data?.length || 0, 1),
-            borderWidth: ds.borderWidth || 1
-          }))
+            backgroundColor:
+              ds.backgroundColor || generateColors(ds.data?.length || 0),
+            borderColor:
+              ds.borderColor || generateColors(ds.data?.length || 0, 1),
+            borderWidth: ds.borderWidth || 1,
+          })),
         },
         options: {
           responsive: true,
@@ -422,19 +515,19 @@ function extractChartsFromContent(content: string): { content: string; charts: a
           plugins: {
             title: {
               display: true,
-              text: chartSpec.title || ''
+              text: chartSpec.title || "",
             },
             legend: {
               display: true,
-              position: 'top'
-            }
+              position: "top",
+            },
           },
-          ...chartSpec.options
-        }
+          ...chartSpec.options,
+        },
       };
-      
+
       charts.push(chart);
-      
+
       // Replace chart JSON with placeholder in content
       processedContent = processedContent.replace(
         match[0],
@@ -442,9 +535,8 @@ function extractChartsFromContent(content: string): { content: string; charts: a
           <p class="text-center text-gray-500 italic">[Chart: ${chart.title}]</p>
         </div>`
       );
-      
     } catch (error) {
-      console.error('Failed to parse chart specification:', error);
+      console.error("Failed to parse chart specification:", error);
       // Replace with error message
       processedContent = processedContent.replace(
         match[0],
@@ -452,7 +544,7 @@ function extractChartsFromContent(content: string): { content: string; charts: a
       );
     }
   }
-  
+
   return { content: processedContent, charts };
 }
 
@@ -461,18 +553,18 @@ function extractChartsFromContent(content: string): { content: string; charts: a
  */
 function generateColors(count: number, alpha: number = 0.6): string[] {
   const baseColors = [
-    `rgba(59, 130, 246, ${alpha})`,  // Blue
-    `rgba(16, 185, 129, ${alpha})`,  // Green
-    `rgba(251, 146, 60, ${alpha})`,  // Orange
-    `rgba(147, 51, 234, ${alpha})`,  // Purple
-    `rgba(236, 72, 153, ${alpha})`,  // Pink
-    `rgba(245, 158, 11, ${alpha})`,  // Amber
-    `rgba(6, 182, 212, ${alpha})`,   // Cyan
-    `rgba(239, 68, 68, ${alpha})`,   // Red
+    `rgba(59, 130, 246, ${alpha})`, // Blue
+    `rgba(16, 185, 129, ${alpha})`, // Green
+    `rgba(251, 146, 60, ${alpha})`, // Orange
+    `rgba(147, 51, 234, ${alpha})`, // Purple
+    `rgba(236, 72, 153, ${alpha})`, // Pink
+    `rgba(245, 158, 11, ${alpha})`, // Amber
+    `rgba(6, 182, 212, ${alpha})`, // Cyan
+    `rgba(239, 68, 68, ${alpha})`, // Red
     `rgba(107, 114, 128, ${alpha})`, // Gray
-    `rgba(34, 197, 94, ${alpha})`    // Emerald
+    `rgba(34, 197, 94, ${alpha})`, // Emerald
   ];
-  
+
   const colors: string[] = [];
   for (let i = 0; i < count; i++) {
     colors.push(baseColors[i % baseColors.length]);
